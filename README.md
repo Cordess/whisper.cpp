@@ -1,4 +1,17 @@
 # whisper.cpp
+Anmerkungen von Marian:
+Folgende Zeilen musste ich in Cmakelist(in whisper.cpp/ggml)
+option(GGML_CUDA                            "ggml: use CUDA"                                  ON)(Zeile 124)
+(in whisper.cpp-ordner)
+option(WHISPER_SDL2 "whisper: support for libSDL2" ON) Zeile 79
+
+Bauen in whisper.cpp-ordner mit cmake -B build
+cmake --build build --config Release
+
+ausführen mit
+./command -m Pfad zum model
+
+Ausführen nur in Powershell, alles andere funktioniert aus mir unbekannten Gründen nicht
 
 ![whisper.cpp](https://user-images.githubusercontent.com/1991296/235238348-05d0f6a4-da44-4900-a1de-d0707e75b763.jpeg)
 
