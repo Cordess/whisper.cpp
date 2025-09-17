@@ -12,11 +12,17 @@ REST-Zusatz
 C:\Program Files\Git\mingw64\bin muss in Path hinzugefügt werden damit curl zur Verfügung steht
 
 Danach ausführen, damit pcr im System installiert wird:
+
 git clone https://github.com/libcpr/cpr.git
+
 cd cpr && mkdir build && cd build
+
 cmake .. -DCPR_USE_SYSTEM_CURL=ON
+
 cmake --build . --parallel
+
 sudo cmake --install .
+
 
 
 ausführen mit
