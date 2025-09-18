@@ -8,25 +8,25 @@ option(WHISPER_SDL2 "whisper: support for libSDL2" ON) Zeile 79
 Bauen in whisper.cpp-ordner mit cmake -B build
 cmake --build build --config Release
 
-REST-Zusatz
+REST-Zusatz(Wird von Whisper nicht erkannt :( )
 C:\Program Files\Git\mingw64\bin muss in Path hinzugefügt werden damit curl zur Verfügung steht
-
 Danach ausführen, damit pcr im System installiert wird:
-
 git clone https://github.com/libcpr/cpr.git
-
 cd cpr && mkdir build && cd build
-
 cmake .. -DCPR_USE_SYSTEM_CURL=ON
 -->
 (Damit das hier funktioniert muss vcpkg installiert werden. Anschließend vcpkg install curl. Anschließend Cmakelist.txt editieren(das vom Zielprojekt, bei mir was es cpr, damit die Toolchain auch gefunden wird. 
 Editieren mit : include(/Users/Cordess/source/repos/VCPKG/vcpkg/scripts/buildsystems/vcpkg.cmake) << Diese Zeile muss vor dem ersten Find_package erscheinen. Erst dann kann es 
 auf die installierten vcpkg Pakete zugreifen)
-
 cmake --build . --parallel
-
 sudo cmake --install .
 
+Variante 2 für Rest. 
+VCPKG installieren und anschließend vcpkg install cpr
+In CmakeList vor einem Find Package hinzufügen, damit die Tools gefunden werden:
+include(/Users/Cordess/source/repos/VCPKG/vcpkg/scripts/buildsystems/vcpkg.cmake)
+find_package(cpr CONFIG REQUIRED)
+target_link_libraries(${TARGET} PRIVATE cpr::cpr)
 
 
 ausführen mit
