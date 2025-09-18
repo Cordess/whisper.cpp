@@ -18,6 +18,10 @@ git clone https://github.com/libcpr/cpr.git
 cd cpr && mkdir build && cd build
 
 cmake .. -DCPR_USE_SYSTEM_CURL=ON
+-->
+(Damit das hier funktioniert muss vcpkg installiert werden. Anschließend vcpkg install curl. Anschließend Cmakelist.txt editieren, damit die Toolchain auch gefunden wird. 
+Editieren mit : include(/Users/Cordess/source/repos/VCPKG/vcpkg/scripts/buildsystems/vcpkg.cmake) << Diese Zeile muss vor dem ersten Find_package erscheinen. Erst dann kann es 
+auf die installierten vcpkg Pakete zugreifen)
 
 cmake --build . --parallel
 
