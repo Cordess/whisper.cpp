@@ -31,6 +31,7 @@ target_link_libraries(${TARGET} PRIVATE cpr::cpr)
 
 ausführen mit
 ./command -m Pfad zum model
+Bsp.: command.exe -m ../../../models/ggml-large-v1.bin
 
 Ausführen nur in Powershell, alles andere funktioniert aus mir unbekannten Gründen nicht
 
