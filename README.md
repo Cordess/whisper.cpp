@@ -28,6 +28,11 @@ include(/Users/Cordess/source/repos/VCPKG/vcpkg/scripts/buildsystems/vcpkg.cmake
 find_package(cpr CONFIG REQUIRED)
 target_link_libraries(${TARGET} PRIVATE cpr::cpr)
 
+Musste cmakelist in command anpassen, genaueres im Code zu finden.
+Zudem funktionieren danach die Min Methoden nicht mehr und müssen mit fmin/fmax ersetzt werden.
+Auch müssen diverse Bibliotheken mit vcpkg install (zlib, bla blub) installiert werden. Welche fehlen bekommt man angezeigt wenn man im Build Ordner cmake .. ausführt
+Auch ganz wichtig, wenn neue Bibliotheken hinzukommen, dann immer zuerst cmake ohne build parameter starten
+Danach dann das übliche cmake -build build und evtl. config release, damit die ausführung schnell geht
 
 ausführen mit
 ./command -m Pfad zum model
