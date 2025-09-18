@@ -1,0 +1,20 @@
+﻿{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 19,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "hidden": false,
+      "generator": "Ninja",
+      "description": "Default with vcpkg toolchain",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/Users/Cordess/source/repos/VCPKG/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "WHISPER_SDL2": "ON"
+      }
+    }
+  ]
+}

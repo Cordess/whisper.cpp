@@ -1,4 +1,4 @@
-// Voice assistant example
+﻿// Voice assistant example
 //
 // Speak short text commands to the microphone.
 // This program will detect your voice command and convert them to text.
@@ -10,7 +10,7 @@
 #include "common.h"
 #include "whisper.h"
 #include "grammar-parser.h"
-
+#include <chrono>
 #include <sstream>
 #include <cassert>
 #include <cstdio>
@@ -21,10 +21,12 @@
 #include <thread>
 #include <vector>
 #include <map>
+// Ensure the CPR library is included properly
+#include <cpr/cpr.h>
 
 // command-line parameters
 struct whisper_params {
-    int32_t n_threads  = std::min(4, (int32_t) std::thread::hardware_concurrency());
+    int32_t n_threads  = std::fmin(4, (int32_t) std::thread::hardware_concurrency());
     int32_t prompt_ms  = 5000;
     int32_t command_ms = 8000;
     int32_t capture_id = -1;
@@ -58,6 +60,9 @@ struct whisper_params {
 };
 
 void whisper_print_usage(int argc, char ** argv, const whisper_params & params);
+void send_discord_webhook(const std::string& text);
+
+static std::string WhisperFullCtxzuText(whisper_context* ctx, float& logprob_min, float& logprob_sum, int& n_tokens);
 
 static bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
     for (int i = 1; i < argc; i++) {
@@ -192,28 +197,36 @@ static std::string transcribe(
     }
 
     std::string result;
+    result = WhisperFullCtxzuText(ctx, logprob_min, logprob_sum, n_tokens);
+
+    //result = _result;
+    const auto t_end = std::chrono::high_resolution_clock::now();
+    t_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
+
+    return result;
+}
+
+static std::string WhisperFullCtxzuText(whisper_context* ctx, float& logprob_min, float& logprob_sum, int& n_tokens)
+{
+    std::string _result;
 
     const int n_segments = whisper_full_n_segments(ctx);
     for (int i = 0; i < n_segments; ++i) {
-        const char * text = whisper_full_get_segment_text(ctx, i);
+        const char* text = whisper_full_get_segment_text(ctx, i);
 
-        result += text;
+        _result += text;
 
         const int n = whisper_full_n_tokens(ctx, i);
         for (int j = 0; j < n; ++j) {
             const auto token = whisper_full_get_token_data(ctx, i, j);
 
-            if(token.plog > 0.0f) exit(0);
-            logprob_min = std::min(logprob_min, token.plog);
+            if (token.plog > 0.0f) exit(0);
+            logprob_min = std::fmin(logprob_min, token.plog);
             logprob_sum += token.plog;
             ++n_tokens;
         }
     }
-
-    const auto t_end = std::chrono::high_resolution_clock::now();
-    t_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
-
-    return result;
+    return _result;
 }
 
 static std::vector<std::string> read_allowed_commands(const std::string & fname) {
@@ -287,7 +300,7 @@ static int process_command_list(struct whisper_context * ctx, audio_async &audio
             }
         }
 
-        max_len = std::max(max_len, (int) cmd.size());
+        max_len = std::fmax(max_len, (int) cmd.size());
     }
 
     fprintf(stderr, "%s: allowed commands [ tokens ]:\n", __func__);
@@ -388,7 +401,7 @@ static int process_command_list(struct whisper_context * ctx, audio_async &audio
                 {
                     float max = -1e9;
                     for (int i = 0; i < (int) probs.size(); ++i) {
-                        max = std::max(max, logits[i]);
+                        max = std::fmax(max, logits[i]);
                     }
 
                     float sum = 0.0f;
@@ -451,6 +464,18 @@ static int process_command_list(struct whisper_context * ctx, audio_async &audio
                             "\033[1m", allowed_commands[index].c_str(), "\033[0m", prob,
                             (int) std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
                     fprintf(stdout, "\n");
+                    //if(allowed_commands[index].compare("discord") == 0)
+				    {
+						float logprob_min0 = 0.0f;
+						float logprob_sum0 = 0.0f;
+						int   n_tokens0 = 0;
+						int64_t t_ms = 0;
+                        const auto txt = ::trim(::transcribe(ctx, params, pcmf32_cur, "prompt", logprob_min0, logprob_sum0, n_tokens0, t_ms));
+                        const float p = 100.0f * std::exp(logprob_min0);
+                        fprintf(stdout, "%s: Heard '%s%s%s', (t = %d ms, p = %.2f%%)\n", __func__, "\033[1m", txt.c_str(), "\033[0m", (int)t_ms, p);
+						//add code to send a POST request to a discord webhook with cpr
+                        send_discord_webhook(txt);
+				    }
                 }
             }
 
@@ -460,6 +485,26 @@ static int process_command_list(struct whisper_context * ctx, audio_async &audio
 
     return 0;
 }
+
+void send_discord_webhook(const std::string& text) {
+    std::string url = "https://discord.com/api/webhooks/1415268710926520380/hQ46kU6fYGY6ycTiTdPeK3IvvnfwkXox-5Yt7xHxL4R9919qEStZSiPAc2SIwNyRvE5Z";
+    // JSON-Body dynamisch mit Variable text erzeugen
+    std::string payload =
+        "{\n"
+        "  \"content\": \"" + text + "\",\n"
+        "  \"username\": \"Ignore-Me\"\n"
+        "}";
+
+    cpr::Response r = cpr::Post(
+        cpr::Url{ url },
+        cpr::Header{ {"Content-Type", "application/json"} },
+        cpr::Body{ payload }
+    );
+
+    fprintf(stdout, "Status: %d\n", r.status_code);
+    fprintf(stdout, "Body: %s\n", r.text.c_str());
+}
+
 
 // always-prompt mode
 // transcribe the voice into text after valid prompt
@@ -560,7 +605,7 @@ static int process_general_transcription(struct whisper_context * ctx, audio_asy
     std::vector<float> pcmf32_cur;
     std::vector<float> pcmf32_prompt;
 
-    std::string k_prompt = "Ok Whisper, start listening for commands.";
+    std::string k_prompt = "Nachricht senden.";
     if (!params.prompt.empty()) {
         k_prompt = params.prompt;
     }
@@ -578,7 +623,7 @@ static int process_general_transcription(struct whisper_context * ctx, audio_asy
 
         if (ask_prompt) {
             fprintf(stdout, "\n");
-            fprintf(stdout, "%s: Say the following phrase: '%s%s%s'\n", __func__, "\033[1m", k_prompt.c_str(), "\033[0m");
+            fprintf(stdout, "%s: TEST CMAKE Say the following phrase: '%s%s%s'\n", __func__, "\033[1m", k_prompt.c_str(), "\033[0m");
             fprintf(stdout, "\n");
 
             ask_prompt = false;
@@ -665,6 +710,7 @@ static int process_general_transcription(struct whisper_context * ctx, audio_asy
                         const std::string command = ::trim(txt.substr(best_len));
 
                         fprintf(stdout, "%s: Command '%s%s%s', (t = %d ms)\n", __func__, "\033[1m", command.c_str(), "\033[0m", (int) t_ms);
+                        send_discord_webhook(command.c_str());
                     }
 
                     fprintf(stdout, "\n");
