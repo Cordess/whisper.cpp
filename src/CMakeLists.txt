@@ -7,6 +7,26 @@ if (WIN32)
     endif()
 endif()
 
+
+if (WHISPER_ALL_WARNINGS)
+    if (NOT MSVC)
+        list(APPEND WARNING_FLAGS -Wall -Wextra -Wpedantic -Wcast-qual -Wno-unused-function)
+        list(APPEND C_FLAGS       -Wshadow -Wstrict-prototypes -Wpointer-arith -Wmissing-prototypes
+                                  -Werror=implicit-int -Werror=implicit-function-declaration)
+        list(APPEND CXX_FLAGS     -Wmissing-declarations -Wmissing-noreturn)
+
+        list(APPEND C_FLAGS   ${WARNING_FLAGS})
+        list(APPEND CXX_FLAGS ${WARNING_FLAGS})
+
+        add_compile_options("$<$<COMPILE_LANGUAGE:C>:${C_FLAGS}>"
+                            "$<$<COMPILE_LANGUAGE:CXX>:${CXX_FLAGS}>")
+    else()
+        # todo : msvc
+        set(C_FLAGS   "")
+        set(CXX_FLAGS "")
+    endif()
+endif()
+
 if (WHISPER_COREML)
     find_library(FOUNDATION_FRAMEWORK Foundation)
     find_library(COREML_FRAMEWORK CoreML)
@@ -38,6 +58,7 @@ if (WHISPER_COREML)
     set(TARGET whisper.coreml)
 
     add_library(${TARGET}
+        coreml/whisper-compat.m
         coreml/whisper-encoder.h
         coreml/whisper-encoder.mm
         coreml/whisper-encoder-impl.h
@@ -56,6 +77,7 @@ if (WHISPER_COREML)
         COMPILE_FLAGS "-fobjc-arc"
         XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
         )
+
     set_target_properties(${TARGET} PROPERTIES FOLDER "libs")
 endif()
 
@@ -78,42 +100,13 @@ if (WHISPER_OPENVINO)
     set_target_properties(${TARGET} PROPERTIES FOLDER "libs")
 endif()
 
-#if (GGML_CUDA)
-#    cmake_minimum_required(VERSION 3.18)  # for CMAKE_CUDA_ARCHITECTURES
-#
-#    find_package(CUDAToolkit)
-#    if (CUDAToolkit_FOUND)
-#        message(STATUS "CUDA found")
-#
-#        if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-#            # 52 == lowest CUDA 12 standard
-#            # 60 == f16 CUDA intrinsics
-#            # 61 == integer CUDA intrinsics
-#            # 70 == compute capability at which unrolling a loop in mul_mat_q kernels is faster
-#            set(CMAKE_CUDA_ARCHITECTURES "52;61;70") # lowest CUDA 12 standard + lowest for integer intrinsics
-#        endif()
-#        message(STATUS "Using CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
-#
-#        enable_language(CUDA)
-#    else()
-#        message(WARNING "CUDA not found")
-#    endif()
-#endif()
-
 # whisper
 
 add_library(whisper
             ../include/whisper.h
+            whisper-arch.h
             whisper.cpp
-            whisper-mel.hpp
             )
-
-# TODO: disabled because it relies on ggml internals that are no longer accessible (ggml-backend-impl.h, ggml-cuda/common.cuh, ..)
-#if (GGML_CUDA)
-#    target_sources(whisper PRIVATE whisper-mel-cuda.cu)
-#
-#    target_link_libraries(whisper PRIVATE CUDA::cufft)
-#endif()
 
 # Set the version numbers
 set_target_properties(whisper PROPERTIES
@@ -123,6 +116,10 @@ set_target_properties(whisper PROPERTIES
 
 target_include_directories(whisper PUBLIC . ../include)
 target_compile_features   (whisper PUBLIC cxx_std_11) # don't bump
+
+if (CMAKE_CXX_BYTE_ORDER STREQUAL "BIG_ENDIAN")
+    set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DWHISPER_BIG_ENDIAN)
+endif()
 
 if (WHISPER_EXTRA_FLAGS)
     target_compile_options(whisper PRIVATE ${WHISPER_EXTRA_FLAGS})

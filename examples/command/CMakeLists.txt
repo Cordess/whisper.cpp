@@ -13,6 +13,7 @@
     endif()
 
     set(TARGET command)
+    #set(TARGET whisper-command)
     add_executable(${TARGET} command.cpp)
     if(WIN32) # Install dlls in the same directory as the executable on Windows
         set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -28,4 +29,6 @@
     #find_package(cpr CONFIG REQUIRED)
     target_link_libraries(${TARGET} PRIVATE common common-sdl whisper ${CMAKE_THREAD_LIBS_INIT})
     target_link_libraries(${TARGET} PRIVATE cpr::cpr)
+
+    #install(TARGETS ${TARGET} RUNTIME)
 endif ()

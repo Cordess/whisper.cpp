@@ -2,6 +2,7 @@
 #define WHISPER_H
 
 #include "ggml.h"
+#include "ggml-cpu.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -31,10 +32,8 @@
 
 #define WHISPER_SAMPLE_RATE 16000
 #define WHISPER_N_FFT       400
-#define WHISPER_N_FFT_HALF  (WHISPER_N_FFT / 2 + 1)
 #define WHISPER_HOP_LENGTH  160
 #define WHISPER_CHUNK_SIZE  30
-#define WHISPER_N_SAMPLES   (WHISPER_SAMPLE_RATE * WHISPER_CHUNK_SIZE)
 
 #ifdef __cplusplus
 extern "C" {
@@ -101,6 +100,7 @@ extern "C" {
         WHISPER_AHEADS_LARGE_V1,
         WHISPER_AHEADS_LARGE_V2,
         WHISPER_AHEADS_LARGE_V3,
+        WHISPER_AHEADS_LARGE_V3_TURBO,
     };
 
     typedef struct whisper_ahead {
@@ -189,6 +189,17 @@ extern "C" {
         uint32_t             value; // Unicode code point or rule ID
     } whisper_grammar_element;
 
+    typedef struct whisper_vad_params {
+        float threshold;               // Probability threshold to consider as speech.
+        int   min_speech_duration_ms;  // Min duration for a valid speech segment.
+        int   min_silence_duration_ms; // Min silence duration to consider speech as ended.
+        float max_speech_duration_s;   // Max duration of a speech segment before forcing a new segment.
+        int   speech_pad_ms;           // Padding added before and after speech segments.
+        float samples_overlap;         // Overlap in seconds when copying audio samples from speech segment.
+    } whisper_vad_params;
+
+    WHISPER_API const char * whisper_version(void);
+
     // Various functions for loading a ggml whisper model.
     // Allocate (almost) all memory needed for the model.
     // Return NULL on failure
@@ -240,6 +251,13 @@ extern "C" {
     //                     GPU, by caching compiled 'blobs' there.
     //                     Set to nullptr if not used.
     // Returns 0 on success. If OpenVINO is not enabled in build, this simply returns 1.
+    WHISPER_API int whisper_ctx_init_openvino_encoder_with_state(
+        struct whisper_context * ctx,
+          struct whisper_state * state,
+                    const char * model_path,
+                    const char * device,
+                    const char * cache_dir);
+
     WHISPER_API int whisper_ctx_init_openvino_encoder(
         struct whisper_context * ctx,
                     const char * model_path,
@@ -417,6 +435,14 @@ extern "C" {
     WHISPER_API whisper_token whisper_token_transcribe(struct whisper_context * ctx);
 
     // Performance information from the default state.
+    struct whisper_timings {
+        float sample_ms;
+        float encode_ms;
+        float decode_ms;
+        float batchd_ms;
+        float prompt_ms;
+    };
+    WHISPER_API struct whisper_timings * whisper_get_timings(struct whisper_context * ctx);
     WHISPER_API void whisper_print_timings(struct whisper_context * ctx);
     WHISPER_API void whisper_reset_timings(struct whisper_context * ctx);
 
@@ -507,8 +533,8 @@ extern "C" {
         bool detect_language;
 
         // common decoding parameters:
-        bool suppress_blank;    // ref: https://github.com/openai/whisper/blob/f82bc59f5ea234d4b97fb2860842ed38519f7e65/whisper/decoding.py#L89
-        bool suppress_non_speech_tokens; // ref: https://github.com/openai/whisper/blob/7858aa9c08d98f75575035ecd6481f462d66ca27/whisper/tokenizer.py#L224-L253
+        bool suppress_blank; // ref: https://github.com/openai/whisper/blob/f82bc59f5ea234d4b97fb2860842ed38519f7e65/whisper/decoding.py#L89
+        bool suppress_nst;   // non-speech tokens, ref: https://github.com/openai/whisper/blob/7858aa9c08d98f75575035ecd6481f462d66ca27/whisper/tokenizer.py#L224-L253
 
         float temperature;      // initial decoding temperature, ref: https://ai.stackexchange.com/a/32478
         float max_initial_ts;   // ref: https://github.com/openai/whisper/blob/f82bc59f5ea234d4b97fb2860842ed38519f7e65/whisper/decoding.py#L97
@@ -519,7 +545,7 @@ extern "C" {
         float temperature_inc;
         float entropy_thold;    // similar to OpenAI's "compression_ratio_threshold"
         float logprob_thold;
-        float no_speech_thold;  // TODO: not implemented
+        float no_speech_thold;
 
         struct {
             int best_of;    // ref: https://github.com/openai/whisper/blob/f82bc59f5ea234d4b97fb2860842ed38519f7e65/whisper/transcribe.py#L264
@@ -555,11 +581,18 @@ extern "C" {
         size_t                           n_grammar_rules;
         size_t                           i_start_rule;
         float                            grammar_penalty;
+
+        // Voice Activity Detection (VAD) params
+        bool         vad;                         // Enable VAD
+        const char * vad_model_path;              // Path to VAD model
+
+        whisper_vad_params vad_params;
     };
 
     // NOTE: this function allocates memory, and it is the responsibility of the caller to free the pointer - see whisper_free_context_params & whisper_free_params()
     WHISPER_API struct whisper_context_params * whisper_context_default_params_by_ref(void);
     WHISPER_API struct whisper_context_params   whisper_context_default_params       (void);
+
     WHISPER_API struct whisper_full_params * whisper_full_default_params_by_ref(enum whisper_sampling_strategy strategy);
     WHISPER_API struct whisper_full_params   whisper_full_default_params       (enum whisper_sampling_strategy strategy);
 
@@ -637,6 +670,53 @@ extern "C" {
     WHISPER_API float whisper_full_get_token_p           (struct whisper_context * ctx, int i_segment, int i_token);
     WHISPER_API float whisper_full_get_token_p_from_state(struct whisper_state * state, int i_segment, int i_token);
 
+    //
+    // Voice Activity Detection (VAD)
+    //
+
+    struct whisper_vad_context;
+
+    WHISPER_API struct whisper_vad_params whisper_vad_default_params(void);
+
+    struct whisper_vad_context_params {
+        int   n_threads;  // The number of threads to use for processing.
+        bool  use_gpu;
+        int   gpu_device; // CUDA device
+    };
+
+    WHISPER_API struct whisper_vad_context_params whisper_vad_default_context_params(void);
+
+    WHISPER_API struct whisper_vad_context * whisper_vad_init_from_file_with_params(const char * path_model,              struct whisper_vad_context_params params);
+    WHISPER_API struct whisper_vad_context * whisper_vad_init_with_params          (struct whisper_model_loader * loader, struct whisper_vad_context_params params);
+
+    WHISPER_API bool whisper_vad_detect_speech(
+            struct whisper_vad_context * vctx,
+                           const float * samples,
+                                   int   n_samples);
+
+    WHISPER_API int     whisper_vad_n_probs(struct whisper_vad_context * vctx);
+    WHISPER_API float * whisper_vad_probs  (struct whisper_vad_context * vctx);
+
+    struct whisper_vad_segments;
+
+    WHISPER_API struct whisper_vad_segments * whisper_vad_segments_from_probs(
+            struct whisper_vad_context * vctx,
+            struct whisper_vad_params    params);
+
+    WHISPER_API struct whisper_vad_segments * whisper_vad_segments_from_samples(
+            struct whisper_vad_context * vctx,
+            struct whisper_vad_params    params,
+                           const float * samples,
+                                   int   n_samples);
+
+    WHISPER_API int whisper_vad_segments_n_segments(struct whisper_vad_segments * segments);
+
+    WHISPER_API float whisper_vad_segments_get_segment_t0(struct whisper_vad_segments * segments, int i_segment);
+    WHISPER_API float whisper_vad_segments_get_segment_t1(struct whisper_vad_segments * segments, int i_segment);
+
+    WHISPER_API void whisper_vad_free_segments(struct whisper_vad_segments * segments);
+    WHISPER_API void whisper_vad_free         (struct whisper_vad_context  * ctx);
+
     ////////////////////////////////////////////////////////////////////////////
 
     // Temporary helpers needed for exposing ggml interface
@@ -650,6 +730,9 @@ extern "C" {
 
     WHISPER_API void whisper_log_set(ggml_log_callback log_callback, void * user_data);
 
+    // Get the no_speech probability for the specified segment
+    WHISPER_API float whisper_full_get_segment_no_speech_prob           (struct whisper_context * ctx, int i_segment);
+    WHISPER_API float whisper_full_get_segment_no_speech_prob_from_state(struct whisper_state * state, int i_segment);
 #ifdef __cplusplus
 }
 #endif
