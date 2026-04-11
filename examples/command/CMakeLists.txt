@@ -12,9 +12,10 @@
       set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
     endif()
 
-    set(TARGET command)
-    #set(TARGET whisper-command)
-    add_executable(${TARGET} command.cpp)
+    #set(TARGET command)
+    set(TARGET whisper-command)
+    add_executable(${TARGET} command.cpp) wenn executable gebraucht wird
+    #add_library(${TARGET} SHARED command.cpp)#dll variante
     if(WIN32) # Install dlls in the same directory as the executable on Windows
         set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
         set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -25,10 +26,11 @@
     FetchContent_Declare(cpr GIT_REPOSITORY https://github.com/libcpr/cpr.git
                          GIT_TAG 1.12.0) # Replace with your desired git commit from: https://github.com/libcpr/cpr/releases
     FetchContent_MakeAvailable(cpr)
-    #include(/Users/Cordess/source/repos/VCPKG/vcpkg/scripts/buildsystems/vcpkg.cmake)
+    include(/Users/Cordess/source/repos/VCPKG/vcpkg/scripts/buildsystems/vcpkg.cmake)
+    link_directories(/Users/Cordess/source/repos/VCPKG/vcpkg/installed/x64-windows/lib)
     #find_package(cpr CONFIG REQUIRED)
     target_link_libraries(${TARGET} PRIVATE common common-sdl whisper ${CMAKE_THREAD_LIBS_INIT})
     target_link_libraries(${TARGET} PRIVATE cpr::cpr)
 
-    #install(TARGETS ${TARGET} RUNTIME)
+    install(TARGETS ${TARGET} RUNTIME)
 endif ()
