@@ -733,25 +733,20 @@ static int process_general_transcription(struct whisper_context * ctx, audio_asy
 }
 
 // segmented transcription mode
-// splits audio from WAV files into segments (using a sliding window with VAD-based silence detection)
-// and transcribes each segment individually, similar to the approach in whisper-stream.
+// splits audio from WAV files into non-overlapping sequential chunks and transcribes each
+// segment individually, inspired by the chunked approach in whisper-stream.
+// Uses prompt token carry-forward between segments for context continuity without audio overlap.
 // This produces better results for longer audio files by keeping each chunk within whisper's optimal window.
 static int process_segmented_transcription_from_file(struct whisper_context* ctx, const whisper_params& params, std::ofstream& fout) {
     bool is_running = true;
 
-    const int     step_ms   = 3000;   // step size in ms (how much new audio per segment)
-    const int     length_ms = 10000;  // max segment length in ms
-    const int     keep_ms   = 200;    // overlap to keep from previous segment for word boundary continuity
+    const int segment_ms = 10000;  // segment length in ms (each chunk sent to whisper)
 
-    const int n_samples_step = (int)((1e-3 * step_ms)   * WHISPER_SAMPLE_RATE);
-    const int n_samples_len  = (int)((1e-3 * length_ms)  * WHISPER_SAMPLE_RATE);
-    const int n_samples_keep = (int)((1e-3 * keep_ms)    * WHISPER_SAMPLE_RATE);
-
-    const int n_new_line = std::max(1, length_ms / step_ms - 1);
+    const int n_samples_segment = (int)((1e-3 * segment_ms) * WHISPER_SAMPLE_RATE);
 
     fprintf(stderr, "\n");
     fprintf(stderr, "%s: segmented transcription mode (file input)\n", __func__);
-    fprintf(stderr, "%s: step = %d ms, length = %d ms, keep = %d ms\n", __func__, step_ms, length_ms, keep_ms);
+    fprintf(stderr, "%s: segment = %d ms (%d samples)\n", __func__, segment_ms, n_samples_segment);
 
     // Get WAV files from directory
     std::string wav_directory = "C:\\Users\\Cordess\\source\\repos\\Cordess\\AvnAudio\\AvnAudioSignalRDemo\\Server\\Files";
@@ -847,7 +842,7 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                 __func__, n_samples_total, (float)n_samples_total / WHISPER_SAMPLE_RATE);
 
         // If the audio is short enough, transcribe it in one go (no segmentation needed)
-        if (n_samples_total <= n_samples_len) {
+        if (n_samples_total <= n_samples_segment) {
             fprintf(stdout, "%s: Audio is short enough for single-pass transcription\n", __func__);
 
             float logprob_min = 0.0f;
@@ -866,44 +861,24 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
             continue;
         }
 
-        // Segment the audio using a sliding window approach (inspired by whisper-stream)
-        fprintf(stdout, "%s: Segmenting audio into chunks (step=%dms, length=%dms, keep=%dms)\n",
-                __func__, step_ms, length_ms, keep_ms);
+        // Split audio into non-overlapping sequential chunks (inspired by whisper-stream)
+        const int n_chunks = (n_samples_total + n_samples_segment - 1) / n_samples_segment;
+        fprintf(stdout, "%s: Splitting audio into %d chunks of %dms each\n",
+                __func__, n_chunks, segment_ms);
 
         std::string full_transcription;
-        std::vector<float> pcmf32_old;
-        int n_iter = 0;
         int pos = 0; // current position in the audio (in samples)
+        int n_iter = 0;
 
         while (pos < n_samples_total && is_running) {
-            // Determine how many new samples to take in this step
-            int n_samples_new = std::min(n_samples_step, n_samples_total - pos);
+            // Take the next chunk — no overlap with previous chunk
+            const int n_samples_chunk = std::min(n_samples_segment, n_samples_total - pos);
 
-            // On the first iteration, take a full length_ms chunk instead of just step_ms
-            if (n_iter == 0) {
-                n_samples_new = std::min(n_samples_len, n_samples_total - pos);
-            }
+            std::vector<float> pcmf32(pcmf32_all.begin() + pos, pcmf32_all.begin() + pos + n_samples_chunk);
 
-            // Build the segment: overlap from previous + new samples
-            const int n_samples_take = (int)std::min((int)pcmf32_old.size(),
-                                                      std::max(0, n_samples_keep + n_samples_len - n_samples_new));
+            pos += n_samples_chunk;
 
-            std::vector<float> pcmf32(n_samples_new + n_samples_take);
-
-            // Copy overlap from previous segment
-            for (int i = 0; i < n_samples_take; i++) {
-                pcmf32[i] = pcmf32_old[pcmf32_old.size() - n_samples_take + i];
-            }
-
-            // Copy new samples
-            memcpy(pcmf32.data() + n_samples_take, pcmf32_all.data() + pos, n_samples_new * sizeof(float));
-
-            pos += n_samples_new;
-
-            // Save current segment for overlap in next iteration
-            pcmf32_old = pcmf32;
-
-            // Run whisper inference on this segment
+            // Run whisper inference on this chunk
             {
                 whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
 
@@ -914,7 +889,7 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                 wparams.translate        = params.translate;
                 wparams.no_context       = true;
                 wparams.no_timestamps    = true;
-                wparams.single_segment   = true;
+                wparams.single_segment   = false;
                 wparams.max_tokens       = params.max_tokens;
                 wparams.language         = params.language.c_str();
                 wparams.n_threads        = params.n_threads;
@@ -926,7 +901,8 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                 wparams.initial_prompt   = params.context.data();
                 wparams.suppress_regex   = params.suppress_regex.c_str();
 
-                // Pass previous tokens as prompt for context continuity
+                // Pass previous segment's tokens as prompt for context continuity
+                // (this helps whisper maintain coherent transcription across chunk boundaries)
                 if (!prompt_tokens.empty()) {
                     wparams.no_context      = false;
                     wparams.prompt_tokens   = prompt_tokens.data();
@@ -934,33 +910,30 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                 }
 
                 if (whisper_full(ctx, wparams, pcmf32.data(), pcmf32.size()) != 0) {
-                    fprintf(stderr, "%s: WARNING: failed to transcribe segment %d\n", __func__, n_iter);
+                    fprintf(stderr, "%s: WARNING: failed to transcribe chunk %d\n", __func__, n_iter);
                     ++n_iter;
                     continue;
                 }
 
-                // Extract text from all segments returned by whisper
+                // Extract text from all segments returned by whisper for this chunk
                 const int n_segments = whisper_full_n_segments(ctx);
                 for (int i = 0; i < n_segments; ++i) {
                     const char* text = whisper_full_get_segment_text(ctx, i);
                     full_transcription += text;
                 }
 
-                // Carry forward tokens as prompt context for the next segment
-                if ((n_iter % n_new_line) == 0) {
-                    prompt_tokens.clear();
-                    const int n_seg = whisper_full_n_segments(ctx);
-                    for (int i = 0; i < n_seg; ++i) {
-                        const int token_count = whisper_full_n_tokens(ctx, i);
-                        for (int j = 0; j < token_count; ++j) {
-                            prompt_tokens.push_back(whisper_full_get_token_id(ctx, i, j));
-                        }
+                // Carry forward tokens as prompt context for the next chunk
+                prompt_tokens.clear();
+                for (int i = 0; i < n_segments; ++i) {
+                    const int token_count = whisper_full_n_tokens(ctx, i);
+                    for (int j = 0; j < token_count; ++j) {
+                        prompt_tokens.push_back(whisper_full_get_token_id(ctx, i, j));
                     }
                 }
             }
 
-            fprintf(stdout, "%s: [segment %d] pos = %.2f / %.2f sec\n",
-                    __func__, n_iter,
+            fprintf(stdout, "%s: [chunk %d/%d] pos = %.2f / %.2f sec\n",
+                    __func__, n_iter + 1, n_chunks,
                     (float)pos / WHISPER_SAMPLE_RATE,
                     (float)n_samples_total / WHISPER_SAMPLE_RATE);
 
