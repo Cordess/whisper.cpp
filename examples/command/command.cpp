@@ -890,7 +890,7 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                 wparams.no_context       = true;
                 wparams.no_timestamps    = true;
                 wparams.single_segment   = false;
-                wparams.max_tokens       = params.max_tokens;
+                wparams.max_tokens       = 0; // unlimited tokens per chunk (params.max_tokens=32 is too low for 10s segments)
                 wparams.language         = params.language.c_str();
                 wparams.n_threads        = params.n_threads;
                 wparams.audio_ctx        = params.audio_ctx;
