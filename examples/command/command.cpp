@@ -815,8 +815,6 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
     }
     fprintf(stderr, "\n");
 
-    std::vector<whisper_token> prompt_tokens;
-
     for (size_t file_idx = 0; file_idx < wav_files.size() && is_running; ++file_idx) {
         const std::string& wav_file = wav_files[file_idx];
 
@@ -901,14 +899,6 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                 wparams.initial_prompt   = params.context.data();
                 wparams.suppress_regex   = params.suppress_regex.c_str();
 
-                // Pass previous segment's tokens as prompt for context continuity
-                // (this helps whisper maintain coherent transcription across chunk boundaries)
-                if (!prompt_tokens.empty()) {
-                    wparams.no_context      = false;
-                    wparams.prompt_tokens   = prompt_tokens.data();
-                    wparams.prompt_n_tokens = (int)prompt_tokens.size();
-                }
-
                 if (whisper_full(ctx, wparams, pcmf32.data(), pcmf32.size()) != 0) {
                     fprintf(stderr, "%s: WARNING: failed to transcribe chunk %d\n", __func__, n_iter);
                     ++n_iter;
@@ -917,18 +907,13 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
 
                 // Extract text from all segments returned by whisper for this chunk
                 const int n_segments = whisper_full_n_segments(ctx);
+                fprintf(stdout, "%s: [chunk %d] whisper returned %d segments, audio samples = %d\n",
+                        __func__, n_iter, n_segments, (int)pcmf32.size());
+
                 for (int i = 0; i < n_segments; ++i) {
                     const char* text = whisper_full_get_segment_text(ctx, i);
+                    fprintf(stdout, "%s: [chunk %d][seg %d] '%s'\n", __func__, n_iter, i, text);
                     full_transcription += text;
-                }
-
-                // Carry forward tokens as prompt context for the next chunk
-                prompt_tokens.clear();
-                for (int i = 0; i < n_segments; ++i) {
-                    const int token_count = whisper_full_n_tokens(ctx, i);
-                    for (int j = 0; j < token_count; ++j) {
-                        prompt_tokens.push_back(whisper_full_get_token_id(ctx, i, j));
-                    }
                 }
             }
 
@@ -951,9 +936,6 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
             fout << wav_file << " : " << txt << std::endl;
             fout.flush();
         }
-
-        // Reset prompt tokens between files
-        prompt_tokens.clear();
     }
 
     fprintf(stdout, "\n");
