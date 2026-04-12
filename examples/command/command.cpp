@@ -872,7 +872,7 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
 
         while (pos < n_samples_total && is_running) {
             // Take the next chunk — no overlap with previous chunk
-            const int n_samples_chunk = std::min(n_samples_segment, n_samples_total - pos);
+            const int n_samples_chunk = std::fmin(n_samples_segment, n_samples_total - pos);
 
             std::vector<float> pcmf32(pcmf32_all.begin() + pos, pcmf32_all.begin() + pos + n_samples_chunk);
 
