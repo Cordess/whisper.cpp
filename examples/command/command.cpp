@@ -887,8 +887,8 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                 wparams.translate        = params.translate;
                 wparams.no_context       = true;
                 wparams.no_timestamps    = true;
-                wparams.single_segment   = false;
-                wparams.max_tokens       = 0; // unlimited tokens per chunk (params.max_tokens=32 is too low for 10s segments)
+                wparams.single_segment   = true;  // force whisper to transcribe the entire chunk (false lets it stop early on pauses)
+                wparams.max_tokens       = 0;    // unlimited tokens per chunk (params.max_tokens=32 is too low for 10s segments)
                 wparams.language         = params.language.c_str();
                 wparams.n_threads        = params.n_threads;
                 wparams.audio_ctx        = params.audio_ctx;
