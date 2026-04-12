@@ -8,6 +8,11 @@ option(WHISPER_SDL2 "whisper: support for libSDL2" ON) Zeile 79
 Bauen in whisper.cpp-ordner mit cmake -B build
 cmake --build build --config Release
 
+Möglicherweise funktioniert sdl2 nicht mehr durch ein vs update. sdl2 installieren mithilfe von vcpkg:
+PS C:\Users\Cordess\source\repos\VCPKG\vcpkg> ./vcpkg install sdl2
+
+cpr
+Ermöglicht Restaufrufe
 REST-Zusatz(Wird von Whisper nicht erkannt :( )
 C:\Program Files\Git\mingw64\bin muss in Path hinzugefügt werden damit curl zur Verfügung steht
 Danach ausführen, damit pcr im System installiert wird:
