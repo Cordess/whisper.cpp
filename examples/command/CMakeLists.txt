@@ -14,7 +14,7 @@
 
     #set(TARGET command)
     set(TARGET whisper-command)
-    add_executable(${TARGET} command.cpp) wenn executable gebraucht wird
+    add_executable(${TARGET} command.cpp) #wenn executable gebraucht wird
     #add_library(${TARGET} SHARED command.cpp)#dll variante
     if(WIN32) # Install dlls in the same directory as the executable on Windows
         set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})

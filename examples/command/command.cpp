@@ -26,6 +26,7 @@
 #include <map>
 // Ensure the CPR library is included properly
 #include <cpr/cpr.h>
+#include <common-whisper.h>
 
 // command-line parameters
 struct whisper_params {
@@ -511,7 +512,6 @@ void send_discord_webhook(const std::string& text) {
     fprintf(stdout, "Body: %s\n", r.text.c_str());
 }
 
-
 // always-prompt mode
 // transcribe the voice into text after valid prompt
 static int always_prompt_transcription(struct whisper_context * ctx, audio_async & audio, const whisper_params & params, std::ofstream & fout) {
@@ -732,6 +732,152 @@ static int process_general_transcription(struct whisper_context * ctx, audio_asy
     return 0;
 }
 
+// general-purpose mode
+// freely transcribe the voice of a file into text
+static int process_general_transcription_from_file(struct whisper_context* ctx, const whisper_params& params, std::ofstream& fout) {
+    bool is_running = true;
+
+    float logprob_min = 0.0f;
+    float logprob_sum = 0.0f;
+    int n_tokens = 0;
+
+    std::vector<float> pcmf32_cur;
+
+    fprintf(stderr, "\n");
+    fprintf(stderr, "%s: general-purpose mode (file input)\n", __func__);
+
+    // Get the directory path from params.fname_out
+    std::string wav_directory = "C:\\Users\\Cordess\\source\\repos\\Cordess\\AvnAudio\\AvnAudioSignalRDemo\\Server\\Files";
+    if (wav_directory.empty()) {
+        fprintf(stderr, "%s: ERROR: no directory path specified\n", __func__);
+        return 1;
+    }
+
+    std::vector<std::string> wav_files;
+
+    // Platform-specific directory listing for C++14
+#ifdef _WIN32
+    // Windows implementation using FindFirstFile/FindNextFile
+    WIN32_FIND_DATAA find_data;
+    std::string search_path = wav_directory;
+    if (search_path.back() != '\\' && search_path.back() != '/') {
+        search_path += "\\";
+    }
+    search_path += "*.wav";
+
+    HANDLE hFind = FindFirstFileA(search_path.c_str(), &find_data);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                std::string filename = wav_directory;
+                if (filename.back() != '\\' && filename.back() != '/') {
+                    filename += "\\";
+                }
+                filename += find_data.cFileName;
+                wav_files.push_back(filename);
+            }
+        } while (FindNextFileA(hFind, &find_data) != 0);
+        FindClose(hFind);
+    }
+#else
+    // POSIX implementation using dirent.h
+    #include <dirent.h>
+    DIR* dir = opendir(wav_directory.c_str());
+    if (dir != nullptr) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            std::string filename(entry->d_name);
+            // Check if file ends with .wav or .WAV
+            if (filename.length() > 4) {
+                std::string ext = filename.substr(filename.length() - 4);
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == ".wav") {
+                    std::string full_path = wav_directory;
+                    if (full_path.back() != '/') {
+                        full_path += "/";
+                    }
+                    full_path += filename;
+                    wav_files.push_back(full_path);
+                }
+            }
+        }
+        closedir(dir);
+    }
+#endif
+
+    if (wav_files.empty()) {
+        fprintf(stderr, "%s: ERROR: no WAV files found in directory '%s'\n", __func__, wav_directory.c_str());
+        return 1;
+    }
+
+    // Sort files alphabetically for consistent processing order
+    std::sort(wav_files.begin(), wav_files.end());
+
+    fprintf(stderr, "%s: found %zu WAV files in '%s'\n", __func__, wav_files.size(), wav_directory.c_str());
+    fprintf(stderr, "\n");
+    fprintf(stderr, "%s: WAV files to process:\n", __func__);
+    for (size_t i = 0; i < wav_files.size(); ++i) {
+        fprintf(stderr, "  %3zu. %s\n", i + 1, wav_files[i].c_str());
+    }
+    fprintf(stderr, "\n");
+
+    // Process each WAV file sequentially
+    for (size_t file_idx = 0; file_idx < wav_files.size() && is_running; ++file_idx) {
+        const std::string& wav_file = wav_files[file_idx];
+        
+        fprintf(stdout, "\n");
+        fprintf(stdout, "%s: ======================================\n", __func__);
+        fprintf(stdout, "%s: Processing file %zu/%zu\n", __func__, file_idx + 1, wav_files.size());
+        fprintf(stdout, "%s: File: %s\n", __func__, wav_file.c_str());
+        fprintf(stdout, "%s: ======================================\n", __func__);
+        
+        // Clear previous audio data
+        pcmf32_cur.clear();
+        
+        // Load WAV file into pcmf32_cur
+        std::vector<std::vector<float>> pcmf32s;
+        if (!read_audio_data(wav_file, pcmf32_cur, pcmf32s, false)) {
+            fprintf(stderr, "%s: ERROR: failed to load WAV file '%s'\n", __func__, wav_file.c_str());
+            if (fout.is_open()) {
+                fout << wav_file << " : [ERROR: Failed to load file]" << std::endl;
+            }
+            continue; // Skip to next file
+        }
+
+        fprintf(stdout, "%s: Loaded %zu samples (%.2f seconds)\n", 
+                __func__, 
+                pcmf32_cur.size(), 
+                (float)pcmf32_cur.size() / WHISPER_SAMPLE_RATE);
+
+        // Transcribe the loaded audio
+        int64_t t_ms = 0;
+        const auto txt = ::trim(::transcribe(ctx, params, pcmf32_cur, "", logprob_min, logprob_sum, n_tokens, t_ms));
+
+        const float p = 100.0f * std::exp(logprob_min);
+
+        fprintf(stdout, "%s: Transcription: '%s%s%s'\n", 
+                __func__, "\033[1m", txt.c_str(), "\033[0m");
+        fprintf(stdout, "%s: Time: %d ms, Probability: %.2f%%\n", 
+                __func__, (int)t_ms, p);
+
+        // Write to output file if specified
+        if (fout.is_open()) {
+            fout << wav_file << " : " << txt << std::endl;
+            fout.flush(); // Ensure data is written immediately
+        }
+
+        // Handle Ctrl + C
+        is_running = sdl_poll_events();
+    }
+
+    fprintf(stdout, "\n");
+    fprintf(stdout, "%s: ======================================\n", __func__);
+    fprintf(stdout, "%s: Completed processing %zu files\n", __func__, wav_files.size());
+    fprintf(stdout, "%s: ======================================\n", __func__);
+
+    return 0;
+}
+
 int main(int argc, char ** argv) {
     ggml_backend_load_all();
 
@@ -780,43 +926,43 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "\n");
     }
 
-    // init audio
+    //// init audio
 
-    audio_async audio(30*1000);
-    if (!audio.init(params.capture_id, WHISPER_SAMPLE_RATE)) {
-        fprintf(stderr, "%s: audio.init() failed!\n", __func__);
-        return 1;
-    }
+    //audio_async audio(30*1000);
+    //if (!audio.init(params.capture_id, WHISPER_SAMPLE_RATE)) {
+    //    fprintf(stderr, "%s: audio.init() failed!\n", __func__);
+    //    return 1;
+    //}
 
-    audio.resume();
+    //audio.resume();
 
-    // wait for 1 second to avoid any buffered noise
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    audio.clear();
+    //// wait for 1 second to avoid any buffered noise
+    //std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    //audio.clear();
 
     int  ret_val = 0;
 
-    if (!params.grammar.empty()) {
-        auto & grammar = params.grammar_parsed;
-        if (is_file_exist(params.grammar.c_str())) {
-            // read grammar from file
-            std::ifstream ifs(params.grammar.c_str());
-            const std::string txt = std::string((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-            grammar = grammar_parser::parse(txt.c_str());
-        } else {
-            // read grammar from string
-            grammar = grammar_parser::parse(params.grammar.c_str());
-        }
+    //if (!params.grammar.empty()) {
+    //    auto & grammar = params.grammar_parsed;
+    //    if (is_file_exist(params.grammar.c_str())) {
+    //        // read grammar from file
+    //        std::ifstream ifs(params.grammar.c_str());
+    //        const std::string txt = std::string((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    //        grammar = grammar_parser::parse(txt.c_str());
+    //    } else {
+    //        // read grammar from string
+    //        grammar = grammar_parser::parse(params.grammar.c_str());
+    //    }
 
-        // will be empty (default) if there are parse errors
-        if (grammar.rules.empty()) {
-            ret_val = 1;
-        } else {
-            fprintf(stderr, "%s: grammar:\n", __func__);
-            grammar_parser::print_grammar(stderr, grammar);
-            fprintf(stderr, "\n");
-        }
-    }
+    //    // will be empty (default) if there are parse errors
+    //    if (grammar.rules.empty()) {
+    //        ret_val = 1;
+    //    } else {
+    //        fprintf(stderr, "%s: grammar:\n", __func__);
+    //        grammar_parser::print_grammar(stderr, grammar);
+    //        fprintf(stderr, "\n");
+    //    }
+    //}
 
     std::ofstream fout;
     if (params.fname_out.length() > 0) {
@@ -827,7 +973,7 @@ int main(int argc, char ** argv) {
         }
     }
 
-    if (ret_val == 0) {
+    /*if (ret_val == 0) {
         if (!params.commands.empty()) {
             ret_val = process_command_list(ctx, audio, params, fout);
         } else if (!params.prompt.empty() && params.grammar_parsed.rules.empty()) {
@@ -835,9 +981,10 @@ int main(int argc, char ** argv) {
         } else {
             ret_val = process_general_transcription(ctx, audio, params, fout);
         }
-    }
+    }*/
+	ret_val = process_general_transcription_from_file(ctx, params, fout);
 
-    audio.pause();
+    //audio.pause();
 
     whisper_print_timings(ctx);
     whisper_free(ctx);
