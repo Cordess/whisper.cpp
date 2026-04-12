@@ -879,7 +879,7 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
 
         int scan_pos = 0;
         while (scan_pos + n_samples_min < n_samples_total) {
-            int ideal_end = std::min(scan_pos + n_samples_target, n_samples_total);
+            int ideal_end = std::fmin(scan_pos + n_samples_target, n_samples_total);
 
             // If remaining audio after this point would be too small, just take it all
             if (n_samples_total - ideal_end < n_samples_min) {
@@ -887,7 +887,7 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
             }
 
             // Search backwards from ideal_end for the quietest window
-            int search_start = std::max(ideal_end - n_samples_search, scan_pos + n_samples_min);
+            int search_start = std::fmax(ideal_end - n_samples_search, scan_pos + n_samples_min);
             float min_energy = FLT_MAX;
             int   best_split = ideal_end;
 
