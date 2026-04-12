@@ -870,7 +870,7 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
         int pos = 0; // current position in the audio (in samples)
         int n_iter = 0;
 
-        while (pos < n_samples_total && is_running) {
+        while (pos < n_samples_total) {
             // Take the next chunk — no overlap with previous chunk
             const int n_samples_chunk = std::fmin(n_samples_segment, n_samples_total - pos);
 
@@ -938,7 +938,6 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                     (float)n_samples_total / WHISPER_SAMPLE_RATE);
 
             ++n_iter;
-            is_running = sdl_poll_events();
         }
 
         // Trim and output the full transcription for this file
