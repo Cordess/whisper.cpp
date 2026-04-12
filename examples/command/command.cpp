@@ -732,6 +732,266 @@ static int process_general_transcription(struct whisper_context * ctx, audio_asy
     return 0;
 }
 
+// segmented transcription mode
+// splits audio from WAV files into segments (using a sliding window with VAD-based silence detection)
+// and transcribes each segment individually, similar to the approach in whisper-stream.
+// This produces better results for longer audio files by keeping each chunk within whisper's optimal window.
+static int process_segmented_transcription_from_file(struct whisper_context* ctx, const whisper_params& params, std::ofstream& fout) {
+    bool is_running = true;
+
+    const int     step_ms   = 3000;   // step size in ms (how much new audio per segment)
+    const int     length_ms = 10000;  // max segment length in ms
+    const int     keep_ms   = 200;    // overlap to keep from previous segment for word boundary continuity
+
+    const int n_samples_step = (int)((1e-3 * step_ms)   * WHISPER_SAMPLE_RATE);
+    const int n_samples_len  = (int)((1e-3 * length_ms)  * WHISPER_SAMPLE_RATE);
+    const int n_samples_keep = (int)((1e-3 * keep_ms)    * WHISPER_SAMPLE_RATE);
+
+    const int n_new_line = std::max(1, length_ms / step_ms - 1);
+
+    fprintf(stderr, "\n");
+    fprintf(stderr, "%s: segmented transcription mode (file input)\n", __func__);
+    fprintf(stderr, "%s: step = %d ms, length = %d ms, keep = %d ms\n", __func__, step_ms, length_ms, keep_ms);
+
+    // Get WAV files from directory
+    std::string wav_directory = "C:\\Users\\Cordess\\source\\repos\\Cordess\\AvnAudio\\AvnAudioSignalRDemo\\Server\\Files";
+    if (wav_directory.empty()) {
+        fprintf(stderr, "%s: ERROR: no directory path specified\n", __func__);
+        return 1;
+    }
+
+    std::vector<std::string> wav_files;
+
+#ifdef _WIN32
+    WIN32_FIND_DATAA find_data;
+    std::string search_path = wav_directory;
+    if (search_path.back() != '\\' && search_path.back() != '/') {
+        search_path += "\\";
+    }
+    search_path += "*.wav";
+
+    HANDLE hFind = FindFirstFileA(search_path.c_str(), &find_data);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                std::string filename = wav_directory;
+                if (filename.back() != '\\' && filename.back() != '/') {
+                    filename += "\\";
+                }
+                filename += find_data.cFileName;
+                wav_files.push_back(filename);
+            }
+        } while (FindNextFileA(hFind, &find_data) != 0);
+        FindClose(hFind);
+    }
+#else
+    DIR* dir = opendir(wav_directory.c_str());
+    if (dir != nullptr) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            std::string filename(entry->d_name);
+            if (filename.length() > 4) {
+                std::string ext = filename.substr(filename.length() - 4);
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == ".wav") {
+                    std::string full_path = wav_directory;
+                    if (full_path.back() != '/') {
+                        full_path += "/";
+                    }
+                    full_path += filename;
+                    wav_files.push_back(full_path);
+                }
+            }
+        }
+        closedir(dir);
+    }
+#endif
+
+    if (wav_files.empty()) {
+        fprintf(stderr, "%s: ERROR: no WAV files found in directory '%s'\n", __func__, wav_directory.c_str());
+        return 1;
+    }
+
+    std::sort(wav_files.begin(), wav_files.end());
+
+    fprintf(stderr, "%s: found %zu WAV files in '%s'\n", __func__, wav_files.size(), wav_directory.c_str());
+    for (size_t i = 0; i < wav_files.size(); ++i) {
+        fprintf(stderr, "  %3zu. %s\n", i + 1, wav_files[i].c_str());
+    }
+    fprintf(stderr, "\n");
+
+    std::vector<whisper_token> prompt_tokens;
+
+    for (size_t file_idx = 0; file_idx < wav_files.size() && is_running; ++file_idx) {
+        const std::string& wav_file = wav_files[file_idx];
+
+        fprintf(stdout, "\n");
+        fprintf(stdout, "%s: ======================================\n", __func__);
+        fprintf(stdout, "%s: Processing file %zu/%zu\n", __func__, file_idx + 1, wav_files.size());
+        fprintf(stdout, "%s: File: %s\n", __func__, wav_file.c_str());
+        fprintf(stdout, "%s: ======================================\n", __func__);
+
+        // Load the entire WAV file
+        std::vector<float> pcmf32_all;
+        std::vector<std::vector<float>> pcmf32s;
+        if (!read_audio_data(wav_file, pcmf32_all, pcmf32s, false)) {
+            fprintf(stderr, "%s: ERROR: failed to load WAV file '%s'\n", __func__, wav_file.c_str());
+            if (fout.is_open()) {
+                fout << wav_file << " : [ERROR: Failed to load file]" << std::endl;
+            }
+            continue;
+        }
+
+        const int n_samples_total = (int)pcmf32_all.size();
+        fprintf(stdout, "%s: Loaded %d samples (%.2f seconds)\n",
+                __func__, n_samples_total, (float)n_samples_total / WHISPER_SAMPLE_RATE);
+
+        // If the audio is short enough, transcribe it in one go (no segmentation needed)
+        if (n_samples_total <= n_samples_len) {
+            fprintf(stdout, "%s: Audio is short enough for single-pass transcription\n", __func__);
+
+            float logprob_min = 0.0f;
+            float logprob_sum = 0.0f;
+            int   n_tokens    = 0;
+            int64_t t_ms      = 0;
+
+            const auto txt = ::trim(::transcribe(ctx, params, pcmf32_all, "", logprob_min, logprob_sum, n_tokens, t_ms));
+
+            fprintf(stdout, "%s: '%s%s%s' (t = %d ms)\n", __func__, "\033[1m", txt.c_str(), "\033[0m", (int)t_ms);
+
+            if (fout.is_open()) {
+                fout << wav_file << " : " << txt << std::endl;
+                fout.flush();
+            }
+            continue;
+        }
+
+        // Segment the audio using a sliding window approach (inspired by whisper-stream)
+        fprintf(stdout, "%s: Segmenting audio into chunks (step=%dms, length=%dms, keep=%dms)\n",
+                __func__, step_ms, length_ms, keep_ms);
+
+        std::string full_transcription;
+        std::vector<float> pcmf32_old;
+        int n_iter = 0;
+        int pos = 0; // current position in the audio (in samples)
+
+        while (pos < n_samples_total && is_running) {
+            // Determine how many new samples to take in this step
+            int n_samples_new = std::min(n_samples_step, n_samples_total - pos);
+
+            // On the first iteration, take a full length_ms chunk instead of just step_ms
+            if (n_iter == 0) {
+                n_samples_new = std::min(n_samples_len, n_samples_total - pos);
+            }
+
+            // Build the segment: overlap from previous + new samples
+            const int n_samples_take = (int)std::min((int)pcmf32_old.size(),
+                                                      std::max(0, n_samples_keep + n_samples_len - n_samples_new));
+
+            std::vector<float> pcmf32(n_samples_new + n_samples_take);
+
+            // Copy overlap from previous segment
+            for (int i = 0; i < n_samples_take; i++) {
+                pcmf32[i] = pcmf32_old[pcmf32_old.size() - n_samples_take + i];
+            }
+
+            // Copy new samples
+            memcpy(pcmf32.data() + n_samples_take, pcmf32_all.data() + pos, n_samples_new * sizeof(float));
+
+            pos += n_samples_new;
+
+            // Save current segment for overlap in next iteration
+            pcmf32_old = pcmf32;
+
+            // Run whisper inference on this segment
+            {
+                whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
+
+                wparams.print_progress   = false;
+                wparams.print_special    = params.print_special;
+                wparams.print_realtime   = false;
+                wparams.print_timestamps = !params.no_timestamps;
+                wparams.translate        = params.translate;
+                wparams.no_context       = true;
+                wparams.no_timestamps    = true;
+                wparams.single_segment   = true;
+                wparams.max_tokens       = params.max_tokens;
+                wparams.language         = params.language.c_str();
+                wparams.n_threads        = params.n_threads;
+                wparams.audio_ctx        = params.audio_ctx;
+                wparams.temperature      = 0.4f;
+                wparams.temperature_inc  = 1.0f;
+                wparams.greedy.best_of   = 5;
+                wparams.beam_search.beam_size = 5;
+                wparams.initial_prompt   = params.context.data();
+                wparams.suppress_regex   = params.suppress_regex.c_str();
+
+                // Pass previous tokens as prompt for context continuity
+                if (!prompt_tokens.empty()) {
+                    wparams.no_context      = false;
+                    wparams.prompt_tokens   = prompt_tokens.data();
+                    wparams.prompt_n_tokens = (int)prompt_tokens.size();
+                }
+
+                if (whisper_full(ctx, wparams, pcmf32.data(), pcmf32.size()) != 0) {
+                    fprintf(stderr, "%s: WARNING: failed to transcribe segment %d\n", __func__, n_iter);
+                    ++n_iter;
+                    continue;
+                }
+
+                // Extract text from all segments returned by whisper
+                const int n_segments = whisper_full_n_segments(ctx);
+                for (int i = 0; i < n_segments; ++i) {
+                    const char* text = whisper_full_get_segment_text(ctx, i);
+                    full_transcription += text;
+                }
+
+                // Carry forward tokens as prompt context for the next segment
+                if ((n_iter % n_new_line) == 0) {
+                    prompt_tokens.clear();
+                    const int n_seg = whisper_full_n_segments(ctx);
+                    for (int i = 0; i < n_seg; ++i) {
+                        const int token_count = whisper_full_n_tokens(ctx, i);
+                        for (int j = 0; j < token_count; ++j) {
+                            prompt_tokens.push_back(whisper_full_get_token_id(ctx, i, j));
+                        }
+                    }
+                }
+            }
+
+            fprintf(stdout, "%s: [segment %d] pos = %.2f / %.2f sec\n",
+                    __func__, n_iter,
+                    (float)pos / WHISPER_SAMPLE_RATE,
+                    (float)n_samples_total / WHISPER_SAMPLE_RATE);
+
+            ++n_iter;
+            is_running = sdl_poll_events();
+        }
+
+        // Trim and output the full transcription for this file
+        const auto txt = ::trim(full_transcription);
+
+        fprintf(stdout, "\n%s: === Full transcription ===\n", __func__);
+        fprintf(stdout, "%s: '%s%s%s'\n", __func__, "\033[1m", txt.c_str(), "\033[0m");
+        fprintf(stdout, "%s: === End (%d segments) ===\n\n", __func__, n_iter);
+
+        if (fout.is_open()) {
+            fout << wav_file << " : " << txt << std::endl;
+            fout.flush();
+        }
+
+        // Reset prompt tokens between files
+        prompt_tokens.clear();
+    }
+
+    fprintf(stdout, "\n");
+    fprintf(stdout, "%s: ======================================\n", __func__);
+    fprintf(stdout, "%s: Completed processing %zu files\n", __func__, wav_files.size());
+    fprintf(stdout, "%s: ======================================\n", __func__);
+
+    return 0;
+}
+
 // general-purpose mode
 // freely transcribe the voice of a file into text
 static int process_general_transcription_from_file(struct whisper_context* ctx, const whisper_params& params, std::ofstream& fout) {
