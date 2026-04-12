@@ -1196,7 +1196,8 @@ int main(int argc, char ** argv) {
             ret_val = process_general_transcription(ctx, audio, params, fout);
         }
     }*/
-	ret_val = process_general_transcription_from_file(ctx, params, fout);
+	//ret_val = process_general_transcription_from_file(ctx, params, fout);
+	ret_val = process_segmented_transcription_from_file(ctx, params, fout);
 
     //audio.pause();
 
