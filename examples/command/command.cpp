@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <map>
@@ -733,20 +735,26 @@ static int process_general_transcription(struct whisper_context * ctx, audio_asy
 }
 
 // segmented transcription mode
-// splits audio from WAV files into non-overlapping sequential chunks and transcribes each
-// segment individually, inspired by the chunked approach in whisper-stream.
-// Uses prompt token carry-forward between segments for context continuity without audio overlap.
-// This produces better results for longer audio files by keeping each chunk within whisper's optimal window.
+// splits audio from WAV files into chunks at silence boundaries using energy-based detection,
+// then transcribes each chunk individually.
+// This produces better results for longer audio files by keeping each chunk within whisper's
+// optimal 30s window and avoiding splits mid-sentence.
 static int process_segmented_transcription_from_file(struct whisper_context* ctx, const whisper_params& params, std::ofstream& fout) {
     bool is_running = true;
 
-    const int segment_ms = 10000;  // segment length in ms (each chunk sent to whisper)
+    const int target_ms  = 25000;  // target chunk size in ms (stay under whisper's 30s limit)
+    const int min_ms     = 5000;   // minimum chunk size in ms (don't create tiny chunks)
+    const int search_ms  = 5000;   // how far back from target to search for silence
+    const int window_ms  = 500;    // sliding window size for energy calculation
 
-    const int n_samples_segment = (int)((1e-3 * segment_ms) * WHISPER_SAMPLE_RATE);
+    const int n_samples_target = (int)((1e-3 * target_ms) * WHISPER_SAMPLE_RATE);
+    const int n_samples_min    = (int)((1e-3 * min_ms)    * WHISPER_SAMPLE_RATE);
+    const int n_samples_search = (int)((1e-3 * search_ms) * WHISPER_SAMPLE_RATE);
+    const int n_samples_window = (int)((1e-3 * window_ms) * WHISPER_SAMPLE_RATE);
 
     fprintf(stderr, "\n");
     fprintf(stderr, "%s: segmented transcription mode (file input)\n", __func__);
-    fprintf(stderr, "%s: segment = %d ms (%d samples)\n", __func__, segment_ms, n_samples_segment);
+    fprintf(stderr, "%s: target = %d ms, min = %d ms, search = %d ms\n", __func__, target_ms, min_ms, search_ms);
 
     // Get WAV files from directory
     std::string wav_directory = "C:\\Users\\Cordess\\source\\repos\\Cordess\\AvnAudio\\AvnAudioSignalRDemo\\Server\\Files";
@@ -839,8 +847,8 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
         fprintf(stdout, "%s: Loaded %d samples (%.2f seconds)\n",
                 __func__, n_samples_total, (float)n_samples_total / WHISPER_SAMPLE_RATE);
 
-        // If the audio is short enough, transcribe it in one go (no segmentation needed)
-        if (n_samples_total <= n_samples_segment) {
+        // If the audio fits within whisper's optimal window, transcribe in one go
+        if (n_samples_total <= n_samples_target) {
             fprintf(stdout, "%s: Audio is short enough for single-pass transcription\n", __func__);
 
             float logprob_min = 0.0f;
@@ -859,22 +867,63 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
             continue;
         }
 
-        // Split audio into non-overlapping sequential chunks (inspired by whisper-stream)
-        const int n_chunks = (n_samples_total + n_samples_segment - 1) / n_samples_segment;
-        fprintf(stdout, "%s: Splitting audio into %d chunks of %dms each\n",
-                __func__, n_chunks, segment_ms);
+        // Split audio at silence boundaries using energy-based detection
+        // 1. Find split points: starting from the target position, search backwards for
+        //    a low-energy (quiet) window to avoid cutting mid-sentence.
+        // 2. Transcribe each chunk independently.
+        fprintf(stdout, "%s: Audio too long for single pass, finding silence-based split points\n", __func__);
+
+        // Pre-compute split points
+        std::vector<int> split_points;
+        split_points.push_back(0);
+
+        int scan_pos = 0;
+        while (scan_pos + n_samples_min < n_samples_total) {
+            int ideal_end = std::min(scan_pos + n_samples_target, n_samples_total);
+
+            // If remaining audio after this point would be too small, just take it all
+            if (n_samples_total - ideal_end < n_samples_min) {
+                break; // last chunk will go to end
+            }
+
+            // Search backwards from ideal_end for the quietest window
+            int search_start = std::max(ideal_end - n_samples_search, scan_pos + n_samples_min);
+            float min_energy = FLT_MAX;
+            int   best_split = ideal_end;
+
+            for (int s = search_start; s + n_samples_window <= ideal_end; s += n_samples_window / 4) {
+                float energy = 0.0f;
+                for (int i = s; i < s + n_samples_window; ++i) {
+                    energy += fabsf(pcmf32_all[i]);
+                }
+                energy /= n_samples_window;
+
+                if (energy < min_energy) {
+                    min_energy = energy;
+                    best_split = s + n_samples_window / 2; // split at center of quiet window
+                }
+            }
+
+            split_points.push_back(best_split);
+            scan_pos = best_split;
+
+            fprintf(stdout, "%s: split point at %.2f sec (energy = %.6f)\n",
+                    __func__, (float)best_split / WHISPER_SAMPLE_RATE, min_energy);
+        }
+        split_points.push_back(n_samples_total);
+
+        const int n_chunks = (int)split_points.size() - 1;
+        fprintf(stdout, "%s: Split into %d chunks\n", __func__, n_chunks);
 
         std::string full_transcription;
-        int pos = 0; // current position in the audio (in samples)
         int n_iter = 0;
 
-        while (pos < n_samples_total) {
-            // Take the next chunk — no overlap with previous chunk
-            const int n_samples_chunk = std::fmin(n_samples_segment, n_samples_total - pos);
+        for (int c = 0; c < n_chunks; ++c) {
+            int chunk_start = split_points[c];
+            int chunk_end   = split_points[c + 1];
+            int n_samples_chunk = chunk_end - chunk_start;
 
-            std::vector<float> pcmf32(pcmf32_all.begin() + pos, pcmf32_all.begin() + pos + n_samples_chunk);
-
-            pos += n_samples_chunk;
+            std::vector<float> pcmf32(pcmf32_all.begin() + chunk_start, pcmf32_all.begin() + chunk_end);
 
             // Run whisper inference on this chunk
             {
@@ -917,9 +966,10 @@ static int process_segmented_transcription_from_file(struct whisper_context* ctx
                 }
             }
 
-            fprintf(stdout, "%s: [chunk %d/%d] pos = %.2f / %.2f sec\n",
-                    __func__, n_iter + 1, n_chunks,
-                    (float)pos / WHISPER_SAMPLE_RATE,
+            fprintf(stdout, "%s: [chunk %d/%d] %.2f - %.2f sec (%.2f sec total)\n",
+                    __func__, c + 1, n_chunks,
+                    (float)chunk_start / WHISPER_SAMPLE_RATE,
+                    (float)chunk_end / WHISPER_SAMPLE_RATE,
                     (float)n_samples_total / WHISPER_SAMPLE_RATE);
 
             ++n_iter;
